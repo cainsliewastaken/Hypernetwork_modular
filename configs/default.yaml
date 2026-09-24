@@ -2,7 +2,7 @@
 # `task` must be set (here or via --set task=pkg.module:TaskClass).
 task: ""
 task_kwargs: {}
-out_dir: runs/default
+out_dir: model_checkpoints/default   # symlink to $SCRATCH; one subdir per run
 seed: 0
 device: auto
 vmap_chunk: 0

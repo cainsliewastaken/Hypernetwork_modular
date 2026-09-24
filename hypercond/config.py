@@ -129,7 +129,7 @@ class EvalConfig:
 class Config:
     task: str = ""                # "pkg.module:TaskClass" or "path/to/file.py:TaskClass"
     task_kwargs: dict = field(default_factory=dict)
-    out_dir: str = "runs/default"
+    out_dir: str = "model_checkpoints/default"
     seed: int = 0
     device: str = "auto"
     vmap_chunk: int = 0           # 0 = no chunking of the per-sample vmap

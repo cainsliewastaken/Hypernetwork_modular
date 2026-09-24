@@ -194,4 +194,5 @@ class Pipeline:
         return pipe
 
     def write_report(self, name: str, report: dict):
+        (self.out / name).parent.mkdir(parents=True, exist_ok=True)
         (self.out / name).write_text(json.dumps(to_float(report), indent=2))

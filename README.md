@@ -52,13 +52,24 @@ Two data conventions matter. Datasets should be ordered by trajectory/time, beca
 
 For a diffusion wheel, `s` is τ; `make_bank(purpose="train")` is where low-τ allocation (e.g. τ ∝ u²) goes; `"solve"` and `"eval"` banks should be fixed, τ-stratified (τ, ε) sets.
 
+## Storage (symlinks to $SCRATCH)
+
+Home space is limited, so data and outputs live on scratch behind two git-ignored symlinks at the repo root:
+
+```
+training_data     -> /pscratch/sd/c/cainslie/training_data            (dataset: training_data/data_lowres, 20,701 .mat files)
+model_checkpoints -> /pscratch/sd/c/cainslie/model_chkpts_scratch/hypernetwork_modular
+```
+
+Each run writes to `model_checkpoints/<run>/` (checkpoints, `log.jsonl`, `train_report.json`), and `eval.py` writes its reports to `model_checkpoints/<run>/eval/`. On a fresh clone, recreate the links with `ln -s` as above.
+
 ## Running
 
 ```bash
 pip install -e .
-python train.py --config configs/default.yaml --set task=my_pkg.tasks:MyTask out_dir=runs/exp1 base.steps=20000
-python train.py --resume runs/exp1/latest.pt           # continues unfinished stages / EM rounds
-python eval.py --ckpt runs/exp1/latest.pt --diag gate guidance flops
+python train.py --config configs/default.yaml --set task=my_pkg.tasks:MyTask out_dir=model_checkpoints/exp1 base.steps=20000
+python train.py --resume model_checkpoints/exp1/latest.pt           # continues unfinished stages / EM rounds
+python eval.py --ckpt model_checkpoints/exp1/latest.pt --diag gate guidance flops
 python -m pytest -q tests                               # smoke test on the toy task
 ```
 

@@ -17,7 +17,7 @@ Diagnostics (--diag, any subset):
   flops          epsilon = hypernet / (K * wheel): size of the matched-FLOP competitor
   all            everything above
 
-  python eval.py --ckpt runs/exp1/latest.pt --diag gate guidance flops
+  python eval.py --ckpt model_checkpoints/exp1/latest.pt --diag gate guidance flops
 """
 import argparse
 
@@ -35,7 +35,7 @@ def main():
     ap.add_argument("--diag", nargs="*", default=[], choices=ALL + ["all"])
     ap.add_argument("--ladder-lams", nargs="*", type=float, default=[10.0, 3.0, 1.0, 0.3, 0.1, 0.03])
     ap.add_argument("--ladder-distill", action="store_true", help="also distill per rung (locates the threshold)")
-    ap.add_argument("--out", default="eval_report.json")
+    ap.add_argument("--out", default="eval/eval_report.json", help="report path, relative to the run dir")
     args = ap.parse_args()
 
     pipe = Pipeline.from_checkpoint(args.ckpt, overrides=apply_overrides({}, args.set))

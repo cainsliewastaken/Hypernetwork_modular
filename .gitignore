@@ -3,3 +3,6 @@ __pycache__/
 runs/
 *.pt
 .pytest_cache/
+# symlinks to $SCRATCH (no trailing slash: a dir/ pattern doesn't match a symlink)
+training_data
+model_checkpoints

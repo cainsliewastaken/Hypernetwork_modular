@@ -2,8 +2,8 @@
 """Train the full stack: base -> meta -> headroom gate -> EM (distill + self-anchoring) -> joint finisher.
 
 Examples
-  python train.py --config configs/default.yaml --set task=my_pkg.tasks:MyTask out_dir=runs/exp1
-  python train.py --resume runs/exp1/latest.pt                     # continue unfinished stages
+  python train.py --config configs/default.yaml --set task=my_pkg.tasks:MyTask out_dir=model_checkpoints/exp1
+  python train.py --resume model_checkpoints/exp1/latest.pt                     # continue unfinished stages
   python train.py --config configs/default.yaml --set stages='[base,gate]'   # headroom gate only
 """
 import argparse
