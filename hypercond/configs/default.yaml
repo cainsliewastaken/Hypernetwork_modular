@@ -1,0 +1,57 @@
+# Default configuration. Every section maps to a part of the reference documents.
+# `task` must be set (here or via --set task=pkg.module:TaskClass).
+task: ""
+task_kwargs: {}
+out_dir: runs/default
+seed: 0
+device: auto
+vmap_chunk: 0
+stages: [base, meta, gate, em, joint]
+
+update_space:            # landscape §6
+  include: []            # regexes; empty = all >=2-D operator weights
+  exclude: []
+  gain: true             # multiplicative gains ...
+  additive: subspace     # ... plus additive operator-space terms (none | subspace | dense)
+  rank: 8                # sweep if head FLOPs matter; check against the collapse rank
+  basis: svd
+  additive_scale: weight_rms
+  obs_basis: affine      # resolve the update in the inference-observed variable (g0 + u*g1)
+  allow_activation_additive: false
+
+hyper:
+  encoder_dim: 256       # bandwidth: predicted first failure at scale
+  width: 512
+  depth: 4
+  head_rank: 0
+  feature_clip: 6.0
+  std_floor: 0.01
+  norm_momentum: 0.01
+  trust_quantile: 0.99
+  trust_factor: 1.5
+  soup: 3
+
+base:   {steps: 0, lr: 1.0e-3, weight_decay: 0.0, batch_size: 64, bank_size: 4, grad_clip: 1.0, eval_every: 500}
+meta:   {steps: 0, lr: 1.0e-4, batch_size: 32, bank_size: 4, inner_steps: 10, inner_lr: 1.0e-2, lam: 1.0, eval_every: 200}
+oracle: {lam: 1.0, steps: 50, lr: 1.0e-2, batch_size: 64, bank_size: 12, bank_seed: 1234}
+distill: {epochs: 100, lr: 1.0e-3, weight_decay: 0.0, batch_size: 64, grad_clip: 1.0,
+          target_val_frac: 0.1, patience: 15, task_loss_weight: 0.0, warm_start: true}
+em:
+  rounds: 3
+  lam_schedule: []
+  target_fraction: 1.0
+  min_increment_rel: 0.01
+  neighbor_threshold: 1.0   # measure your own with `eval.py --diag ladder --ladder-distill`
+  gap_tol: 0.05
+  knn_max: 5000
+joint:  {steps: 0, hyper_lr: 1.0e-4, wheel_lr_ratio: 5.0, anchor_weight: 1.0, batch_size: 64,
+         bank_size: 4, grad_clip: 1.0, eval_every: 100, refresh_em: true}
+eval:
+  bank_size: 16
+  bank_seed: 987
+  batch_size: 128
+  max_batches: 0
+  select_split: val
+  guidance_scales: [0.0, 0.5, 1.0, 1.25, 1.5, 2.0]
+  gate_samples: 256
+  gate_steps_mult: 2.0

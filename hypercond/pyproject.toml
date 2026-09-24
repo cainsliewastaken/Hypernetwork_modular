@@ -1,0 +1,13 @@
+[project]
+name = "hypercond"
+version = "0.1.0"
+description = "Hypernetwork-conditioned iterated solvers via per-sample weight updates (general method stack)."
+requires-python = ">=3.10"
+dependencies = ["torch>=2.1", "numpy", "pyyaml"]
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["hypercond"]
