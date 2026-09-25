@@ -24,11 +24,16 @@ class UpdateSpaceConfig:
     additive_scale: str = "weight_rms" # none | weight_rms : coefficients in units relative to the weight
     obs_basis: str = "affine"          # constant | affine | poly:K | hat:K  (resolution in the observed variable)
     allow_activation_additive: bool = False  # biases / norm shifts / embeddings: the memorization channel
+    spectral: str = "same"             # complex 4-D spectral weights (in, out, m1, m2): same (use `additive`) |
+                                       # coarse: dense coarse c x c grid per channel pair, bilinearly upsampled to (m1, m2)
+    spectral_coarse: int = 16          # c for spectral=coarse
+    spectral_align_corners: bool = True
 
 
 @dataclass
 class HyperConfig:
     encoder_dim: int = 256     # default encoder bandwidth (0 = raw flattened condition)
+    out_scale: float = 1.0     # fixed multiplier on the head output (small values = smaller effective head step)
     width: int = 512
     depth: int = 4             # residual trunk blocks (strongest conventional capacity axis)
     head_rank: int = 0         # 0 = full head; >0 = low-rank head (beware the collapse rank)
@@ -49,6 +54,8 @@ class BaseTrainConfig:
     bank_size: int = 4
     grad_clip: float = 1.0
     eval_every: int = 500
+    warmup_steps: int = 0         # linear warmup from 0
+    schedule: str = "cosine"      # after warmup: cosine (to 0 at `steps`) | constant
 
 
 @dataclass
@@ -100,6 +107,26 @@ class EMConfig:
 
 
 @dataclass
+class DirectConfig:
+    """Direct hypernet training on the task loss (wheel frozen, fresh train bank every step).
+    Amortizes over many stochastic draws instead of solving per-sample targets on a fixed bank, for
+    tasks whose loss is too noisy for oracle targets (e.g. diffusion score matching)."""
+    steps: int = 0
+    lr: float = 1e-4
+    weight_decay: float = 0.0
+    batch_size: int = 6
+    bank_size: int = 8
+    grad_clip: float = 0.25
+    eval_every: int = 250
+    warmup_steps: int = 0         # linear warmup from 0
+    schedule: str = "constant"    # after warmup: constant | cosine (to end_lr at `steps`)
+    end_lr: float = 0.0
+    mode_weight_decay: float = -1.0  # >=0: separate AdamW weight decay for params named "*mode_nets*" (old best: 0.1)
+    train_eval_n: int = 0         # >0: also score this many evenly spaced TRAIN pairs on the eval bank at every
+                                  # check (train vs val margin = generalization gap; capability_diagnostics.md §2)
+
+
+@dataclass
 class JointConfig:
     """Two-timescale joint finisher (§7f)."""
     steps: int = 0
@@ -111,6 +138,7 @@ class JointConfig:
     grad_clip: float = 1.0
     eval_every: int = 100
     refresh_em: bool = True       # one warm-started EM round after the joint phase
+    anchor_reduce: str = "sum"    # sum | mean | relative (drift^2 / anchor^2, scale-free; for very large update spaces)
 
 
 @dataclass
@@ -141,6 +169,7 @@ class Config:
     oracle: OracleConfig = field(default_factory=OracleConfig)
     distill: DistillConfig = field(default_factory=DistillConfig)
     em: EMConfig = field(default_factory=EMConfig)
+    direct: DirectConfig = field(default_factory=DirectConfig)
     joint: JointConfig = field(default_factory=JointConfig)
     eval: EvalConfig = field(default_factory=EvalConfig)
 

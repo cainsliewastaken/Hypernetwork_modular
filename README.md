@@ -21,6 +21,9 @@ hypercond/
   pipeline.py      wiring, stage runner, checkpoints, evaluation
   dashboard.py     JSONL logging and alarms
   config.py        typed config (every section maps to a part of the reference docs)
+tasks/
+  turb2d.py        2D turbulence task (data_lowres, pretrained FNO wheels)
+  fno2d.py         vendored FNO2D score model
 train.py           run the stack
 eval.py            evaluate a checkpoint and run diagnostics
 configs/default.yaml
@@ -62,6 +65,15 @@ model_checkpoints -> /pscratch/sd/c/cainslie/model_chkpts_scratch/hypernetwork_m
 ```
 
 Each run writes to `model_checkpoints/<run>/` (checkpoints, `log.jsonl`, `train_report.json`), and `eval.py` writes its reports to `model_checkpoints/<run>/eval/`. On a fresh clone, recreate the links with `ln -s` as above.
+
+## Problem: 2D turbulence (`tasks/turb2d.py`)
+
+`tasks.turb2d:Turb2DTask` conditions a pretrained concat-FNO diffusion wheel from HyperNetwork-Research on `training_data/data_lowres` (20,701 frames of 256×256 vorticity, one trajectory). The condition is ω_t; the wheel denoises the one-step residual ω_{t+1} − ω_t under a VP-SDE, and the update is resolved in the diffusion time τ. Two wheels are wired in (`task_kwargs.wheel`): `w16` and `w32`, both 2-layer, 64×64-mode FNOs trained on frames 10000–20000. `tasks/fno2d.py` is a vendored copy of that model, so the checkpoints load with `strict=True`. The default splits are time-blocked: train 10000–20000, val 20001–22000, test 22001–30700. The frames are packed once into a float32 `.npy` in `$SCRATCH/hypernet_diffusion_cache/` (`python -m tasks.turb2d --pack`, or automatically on first use).
+
+```bash
+python train.py --config configs/turb2d.yaml                                   # w16
+python train.py --config configs/turb2d.yaml --set task_kwargs.wheel=w32 out_dir=model_checkpoints/turb2d_w32
+```
 
 ## Running
 

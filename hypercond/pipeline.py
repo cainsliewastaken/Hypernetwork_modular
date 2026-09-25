@@ -9,6 +9,7 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 from torch.utils.data.dataloader import default_collate
 
+from . import distributed as D
 from .conditioned import ConditionedWheel
 from .config import Config, config_from_dict
 from .dashboard import Alarms, RunLogger
@@ -17,17 +18,26 @@ from .targets import IndexedDataset, TargetStore
 from .update_space import UpdateSpace
 from .utils import load_object, make_generator, resolve_device, seed_all, to_device, to_float
 
-STAGES = ("base", "meta", "gate", "em", "joint")
+STAGES = ("base", "meta", "gate", "em", "direct", "joint")
+DISTRIBUTED_STAGES = ("base", "direct", "joint")  # stages that support torchrun data parallelism
+
+
+class _NullLogger:
+    """Non-main ranks: no log.jsonl writes."""
+
+    def log(self, *a, **k):
+        pass
 
 
 class Pipeline:
     def __init__(self, cfg: Config, task=None):
         self.cfg = cfg
-        seed_all(cfg.seed)
+        self.rank, self.world = D.rank(), D.world()
+        seed_all(cfg.seed)  # same on every rank: identical initial networks
         self.device = resolve_device(cfg.device)
         self.out = Path(cfg.out_dir)
         self.out.mkdir(parents=True, exist_ok=True)
-        self.logger = RunLogger(self.out)
+        self.logger = RunLogger(self.out) if D.is_main() else _NullLogger()
 
         self.task = task if task is not None else load_object(cfg.task)(**cfg.task_kwargs)
         self.datasets: dict[str, Dataset] = self.task.datasets()
@@ -46,9 +56,13 @@ class Pipeline:
         sample = to_device(default_collate([self.train_ds[0]]), self.device)
         self.cond_dim = int(self.task.condition(sample).flatten(1).shape[1])
         self.hyper = HyperEnsemble([self.build_member() for _ in range(max(1, cfg.hyper.soup))]).to(self.device)
+        D.broadcast_module(self.wheel)
+        D.broadcast_module(self.hyper)
 
         self.solve_bank = to_device(self.task.make_bank(cfg.oracle.bank_size, make_generator(cfg.oracle.bank_seed), "solve"), self.device)
         self.eval_bank = to_device(self.task.make_bank(cfg.eval.bank_size, make_generator(cfg.eval.bank_seed), "eval"), self.device)
+        if self.world > 1:
+            seed_all(cfg.seed + 1000 * self.rank)  # per-rank data shuffles and noise from here on
         self.alarms = Alarms(cfg.em)
         self.state = {"completed": [], "em_round": -1, "em_last": None, "targets": None, "reports": {}}
         self.logger.log("setup", quiet=True, update_space=self.space.describe(),
@@ -62,6 +76,9 @@ class Pipeline:
     # ------------------------------------------------------------------ building blocks
     def build_member(self, **overrides) -> HyperNetwork:
         hc = dataclasses.replace(self.cfg.hyper, **overrides)
+        custom = self.task.build_hypernet(hc, self.space)
+        if custom is not None:
+            return custom.to(self.device)
         enc = self.task.build_encoder(hc)
         if enc is None:
             enc = FlattenEncoder(self.cond_dim, hc.encoder_dim)
@@ -75,7 +92,8 @@ class Pipeline:
         return DataLoader(ds, batch_size=batch_size, shuffle=shuffle, drop_last=drop_last and len(ds) > batch_size)
 
     def train_bank(self, n: int, step: int):
-        return to_device(self.task.make_bank(n, make_generator(self.cfg.seed * 1_000_003 + step), "train"), self.device)
+        seed = self.cfg.seed * 1_000_003 + step + 7919 * self.rank  # rank term is 0 for single-process runs
+        return to_device(self.task.make_bank(n, make_generator(seed), "train"), self.device)
 
     def target_indices(self) -> list[int]:
         idx = self.task.target_indices(self.train_ds)
@@ -133,11 +151,14 @@ class Pipeline:
     def run(self, stages=None):
         from .diagnostics import headroom_gate
         from .em import run_em
-        from .stages import train_base, train_joint, train_meta
+        from .stages import train_base, train_direct, train_joint, train_meta
 
         for st in stages or self.cfg.stages:
             if st not in STAGES:
                 raise ValueError(f"Unknown stage {st!r}; choose from {STAGES}")
+            if self.world > 1 and st not in DISTRIBUTED_STAGES:
+                raise RuntimeError(f"stage {st!r} does not support multi-GPU (torchrun) runs; "
+                                   f"only {DISTRIBUTED_STAGES} do. Run it single-process.")
             if st in self.state["completed"]:
                 print(f"[{st}] already completed, skipping", flush=True)
                 continue
@@ -155,6 +176,8 @@ class Pipeline:
             elif st == "em":
                 run_em(self, start_round=self.state["em_round"] + 1 if self.state["em_round"] >= 0 else 0,
                        rounds=self.cfg.em.rounds - (self.state["em_round"] + 1))
+            elif st == "direct":
+                train_direct(self)
             elif st == "joint":
                 train_joint(self)
                 if self.cfg.joint.steps > 0 and self.cfg.joint.refresh_em and self.state["targets"] is not None:
@@ -165,6 +188,8 @@ class Pipeline:
 
     # ------------------------------------------------------------------ persistence
     def save_targets(self, store: TargetStore):
+        if not D.is_main():
+            return
         path = self.out / f"targets_round{store.round}.pt"
         store.save(path)
         self.state["targets"] = str(path)
@@ -174,6 +199,8 @@ class Pipeline:
         return TargetStore.load(p) if p and Path(p).exists() else None
 
     def save(self, tag: str):
+        if not D.is_main():
+            return
         torch.save({"cfg": self.cfg.to_dict(), "wheel": self.wheel.state_dict(), "space": self.space.state_dict(),
                     "hyper": self.hyper.state_dict(), "state": self.state}, self.out / f"{tag}.pt")
 
@@ -194,5 +221,7 @@ class Pipeline:
         return pipe
 
     def write_report(self, name: str, report: dict):
+        if not D.is_main():
+            return
         (self.out / name).parent.mkdir(parents=True, exist_ok=True)
         (self.out / name).write_text(json.dumps(to_float(report), indent=2))

@@ -1,0 +1,44 @@
+# 2D turbulence (training_data/data_lowres) with a pretrained 2-layer concat-FNO diffusion wheel.
+# Pick the wheel with task_kwargs.wheel: w16 | w32 (see tasks/turb2d.py). The wheel is pretrained,
+# so there is no base/meta stage: the update-space bases are built from the loaded weights.
+# Sizes below are prototype defaults; tune them after the first smoke test (memory scales as
+# batch x updated params: ~34 MB/sample for w16, ~134 MB/sample for w32 with all spectral weights).
+task: tasks.turb2d:Turb2DTask
+task_kwargs:
+  wheel: w16
+  encoder_modes: 0             # hypernet sees all Fourier modes of the frame (0 = all; m = only |kx|, ky < m)
+out_dir: model_checkpoints/turb2d_w16
+seed: 0
+device: auto
+vmap_chunk: 0
+stages: [gate, em]
+
+update_space:
+  include: []
+  exclude: ['spectral_bias']   # additive bias fields = memorization channel
+  gain: true
+  additive: subspace
+  rank: 8
+  basis: svd
+  additive_scale: weight_rms
+  obs_basis: affine            # update resolved in tau: dW(tau) = g0 + u*g1
+
+hyper:
+  encoder_dim: 256             # linear projection of the encoder features (all modes: 66,048 -> 256)
+  width: 512
+  depth: 4
+  soup: 3
+
+oracle: {lam: 1.0, steps: 50, lr: 1.0e-2, batch_size: 16, bank_size: 12, bank_seed: 1234}
+distill: {epochs: 100, lr: 1.0e-3, batch_size: 64, target_val_frac: 0.1, patience: 15}
+em:
+  rounds: 3
+  target_fraction: 0.05        # contiguous 5% of train (~500 adjacent frames): a dense patch
+joint: {steps: 0}
+eval:
+  bank_size: 32                # old val protocol used 32 taus
+  bank_seed: 987
+  batch_size: 16
+  max_batches: 32              # first 512 pairs of each split; 0 = full split
+  select_split: val
+  gate_samples: 128

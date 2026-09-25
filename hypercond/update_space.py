@@ -16,6 +16,10 @@ Per selected weight W (reshaped to out x in):
        | scale * A                   (additive "dense": free out x in)
 Biases, norm shifts and embeddings (activation-additive channels) are excluded by default: they
 are the memorization channel.
+
+Complex weights (e.g. FNO spectral weights) are handled through their real view
+``torch.view_as_real(W)`` (shape ``[*shape, 2]``): gains, bases and deltas are all computed on the
+real view, and the delta is converted back to complex. The coefficients stay real.
 """
 from __future__ import annotations
 
@@ -24,11 +28,17 @@ import warnings
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 _ACTIVATION_ADDITIVE_MODULES = (
     nn.Embedding, nn.EmbeddingBag, nn.LayerNorm, nn.GroupNorm, nn.BatchNorm1d, nn.BatchNorm2d,
     nn.BatchNorm3d, nn.InstanceNorm1d, nn.InstanceNorm2d, nn.InstanceNorm3d,
 )
+
+
+def _real(p: torch.Tensor) -> torch.Tensor:
+    """Real view of a (possibly complex) tensor: [*shape] real or [*shape, 2] for complex."""
+    return torch.view_as_real(p) if p.is_complex() else p
 
 
 class ObsBasis:
@@ -75,16 +85,22 @@ class UpdateSpace(nn.Module):
         self.entries: list[dict] = []
         offset = 0
         for name, p in selected:
+            numel = p.numel() * (2 if p.is_complex() else 1)  # real-view size
             if p.dim() >= 2:
-                out, inn, gain_dim = p.shape[0], p.numel() // p.shape[0], (p.shape[0] if cfg.gain else 0)
+                out, inn, gain_dim = p.shape[0], numel // p.shape[0], (p.shape[0] if cfg.gain else 0)
                 mode = cfg.additive
+                if p.is_complex() and p.dim() == 4 and getattr(cfg, "spectral", "same") == "coarse":
+                    mode = "coarse"
             else:  # activation-additive (only when explicitly allowed)
-                out, inn, gain_dim, mode = p.numel(), 1, 0, "dense"
+                out, inn, gain_dim, mode = numel, 1, 0, "dense"
             if mode == "subspace":
                 r = max(1, min(cfg.rank, out, inn))
                 add_dim = r * r
             elif mode == "dense":
                 r, add_dim = 0, out * inn
+            elif mode == "coarse":  # (in, out, c, c) complex coarse grid -> bilinear upsample over modes
+                r = min(int(cfg.spectral_coarse), p.shape[2], p.shape[3])
+                add_dim = 2 * p.shape[0] * p.shape[1] * r * r
             elif mode == "none":
                 r, add_dim = 0, 0
             else:
@@ -92,7 +108,7 @@ class UpdateSpace(nn.Module):
             if gain_dim + add_dim == 0:
                 continue
             self.entries.append(dict(name=name, shape=tuple(p.shape), out=out, inn=inn, gain_dim=gain_dim,
-                                     mode=mode, r=r, add_dim=add_dim, offset=offset))
+                                     mode=mode, r=r, add_dim=add_dim, offset=offset, complex=p.is_complex()))
             offset += gain_dim + add_dim
         if cfg.gain and cfg.additive == "none":
             warnings.warn("Purely multiplicative update spaces are expressivity-capped (measured three ways); "
@@ -147,7 +163,7 @@ class UpdateSpace(nn.Module):
         """
         params = dict(wheel.named_parameters())
         for i, e in enumerate(self.entries):
-            W = params[e["name"]].detach().float().reshape(e["out"], e["inn"])
+            W = _real(params[e["name"]].detach()).float().reshape(e["out"], e["inn"])
             if self.cfg.additive_scale == "weight_rms":
                 scale = W.pow(2).mean().sqrt().clamp_min(1e-6)
             else:
@@ -180,10 +196,9 @@ class UpdateSpace(nn.Module):
         B = c.shape[0]
         out = {}
         for i, e in enumerate(self.entries):
-            W = params[e["name"]]
-            W2 = W.reshape(e["out"], e["inn"])
+            W2 = _real(params[e["name"]]).reshape(e["out"], e["inn"])
             seg = c[:, e["offset"]: e["offset"] + e["gain_dim"] + e["add_dim"]]
-            d = torch.zeros(B, e["out"], e["inn"], device=c.device, dtype=W.dtype)
+            d = torch.zeros(B, e["out"], e["inn"], device=c.device, dtype=W2.dtype)
             pos = 0
             if e["gain_dim"]:
                 d = d + seg[:, : e["out"], None] * W2[None]
@@ -195,11 +210,22 @@ class UpdateSpace(nn.Module):
                 r = e["r"]
                 C = seg[:, pos: pos + r * r].view(B, r, r)
                 d = d + scale * torch.einsum("or,brq,iq->boi", getattr(self, f"U_{i}"), C, getattr(self, f"V_{i}"))
-            out[e["name"]] = d.view(B, *e["shape"])
+            elif e["mode"] == "coarse":
+                ci, co, m1, m2 = e["shape"]
+                k = e["r"]  # coarse grid size (not `c`: that is the coefficient tensor)
+                g = seg[:, pos: pos + e["add_dim"]].view(B, ci * co * 2, k, k)
+                up = F.interpolate(g, size=(m1, m2), mode="bilinear", align_corners=self.cfg.spectral_align_corners)
+                up = up.view(B, ci, co, 2, m1, m2).permute(0, 1, 2, 4, 5, 3)  # real view (B, ci, co, m1, m2, 2)
+                d = d + scale * up.reshape(B, e["out"], e["inn"])
+            if e["complex"]:
+                out[e["name"]] = torch.view_as_complex(d.reshape(B, *e["shape"], 2).contiguous())
+            else:
+                out[e["name"]] = d.view(B, *e["shape"])
         return out
 
     def describe(self) -> dict:
         return {
             "dim": self.dim, "D": self.D, "n_basis": self.n_basis, "obs_basis": self.obs.spec,
-            "params": [{k: e[k] for k in ("name", "shape", "mode", "r", "gain_dim", "add_dim")} for e in self.entries],
+            "params": [{k: e[k] for k in ("name", "shape", "mode", "r", "gain_dim", "add_dim", "complex")}
+                       for e in self.entries],
         }

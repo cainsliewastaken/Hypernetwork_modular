@@ -15,15 +15,20 @@ class ConditionedWheel(nn.Module):
       Positional tensor args whose leading dim equals B are split per sample (each sample sees a
       batch of 1); everything else (and all kwargs) is broadcast unchanged.
 
+    * If the wheel defines ``forward_batched_params(params, *args, **kwargs)`` (params may carry a
+      leading batch dim), it is used instead of vmap: much faster for wheels whose layers are linear in
+      their weights, where vmap is dispatcher-bound at small per-sample work.
+
     Gradients flow to theta (oracle solves, distillation with task loss) and to the wheel's own
     parameters (joint finisher, meta refinement), including through the multiplicative gain.
     """
 
-    def __init__(self, wheel: nn.Module, space, chunk_size: int | None = None):
+    def __init__(self, wheel: nn.Module, space, chunk_size: int | None = None, batched: bool = True):
         super().__init__()
         self.wheel = wheel
         self.space = space
         self.chunk_size = chunk_size or None
+        self.batched = batched  # use wheel.forward_batched_params when the wheel provides it
 
     def forward(self, theta, s, *args, **kwargs):
         if theta is None:
@@ -33,6 +38,10 @@ class ConditionedWheel(nn.Module):
         c = self.space.coefficients(theta, s)
         deltas = self.space.deltas(c, params)
         batched = {n: params[n].unsqueeze(0) + d for n, d in deltas.items()}
+
+        if self.batched and hasattr(self.wheel, "forward_batched_params"):
+            # wheel applies per-sample weights itself as batched tensor ops (no vmap, no per-sample dispatch)
+            return self.wheel.forward_batched_params(batched, *args, **kwargs)
 
         split = tuple(torch.is_tensor(a) and a.dim() > 0 and a.shape[0] == B for a in args)
         in_dims = (0,) + tuple(0 if sp else None for sp in split)

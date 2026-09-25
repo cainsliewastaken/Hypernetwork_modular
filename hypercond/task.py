@@ -82,6 +82,11 @@ class Task(ABC):
         features, never pooled summaries. None = default flatten+linear encoder."""
         return None
 
+    def build_hypernet(self, hyper_cfg, space) -> nn.Module | None:
+        """Optional problem-specific hypernetwork x -> theta [B, space.dim] (e.g. a head that reads per-mode
+        features of x). Must zero-initialize its output (identity at zero). None = the default HyperNetwork."""
+        return None
+
     def update_param_names(self, wheel: nn.Module) -> list[str] | None:
         """Optional explicit list of wheel parameter names the update may touch. None = use the
         update_space include/exclude regexes over all eligible (>=2-D operator) weights."""

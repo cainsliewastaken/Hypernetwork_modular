@@ -70,9 +70,10 @@ class HyperNetwork(nn.Module):
             last = self.head
         nn.init.zeros_(last.weight)   # identity at zero: the system starts exactly at the base
         nn.init.zeros_(last.bias)
+        self.out_scale = float(getattr(cfg, "out_scale", 1.0))
 
     def forward(self, x):
-        return self.head(self.trunk(self.inp(self.norm(self.encoder(x)))))
+        return self.out_scale * self.head(self.trunk(self.inp(self.norm(self.encoder(x)))))
 
 
 class HyperEnsemble(nn.Module):
